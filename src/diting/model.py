@@ -216,6 +216,9 @@ class Anchor:
     state: str = "verified"
     confirmed_version: int | None = None  # concept version at last human confirmation
     note: str = ""
+    # hash of the concept family (all sites' fingerprints + concept version) at confirmation;
+    # proves this site was reviewed against the current state of its siblings
+    basis: str | None = None
 
     @property
     def ref(self) -> str:
@@ -237,6 +240,7 @@ class Anchor:
             state=state,
             confirmed_version=d.get("confirmed_version"),
             note=d.get("note", "") or "",
+            basis=d.get("basis"),
         )
 
     def to_dict(self) -> dict:
@@ -248,6 +252,8 @@ class Anchor:
         d["state"] = self.state
         if self.confirmed_version is not None:
             d["confirmed_version"] = self.confirmed_version
+        if self.basis:
+            d["basis"] = self.basis
         if self.note:
             d["note"] = self.note
         return d

@@ -1,6 +1,6 @@
 """diting command line.
 
-Commands: init, scan, vocab, concept, anchor, lint, status, query, impact.
+Commands: init, scan, index, vocab, concept, anchor, lint, status, query, impact, sync, confirm, check.
 Every command accepts ``--json`` for compact, agent-readable output.
 """
 
@@ -16,11 +16,13 @@ import yaml
 
 from . import __version__
 from .bootstrap import mine_candidates
+from .check import check
 from .impact import GitError, file_diff_source, git_diff_source, impact
 from .lint import lint
 from .query import query
 from .model import Anchor, Concept, Occurrence, SchemaError, Term
 from .store import DITING_DIR, NotInitialized, Repo
+from .sync import SyncError, confirm, family_hash, rebase_after_add, sync
 
 
 class CliError(Exception):
@@ -49,8 +51,7 @@ def _repo(args: argparse.Namespace) -> Repo:
 def cmd_init(args: argparse.Namespace) -> int:
     repo = Repo(Path(args.root).resolve())
     created = repo.init_layout()
-    symbols = repo.scan()
-    repo.write_cache(symbols)
+    symbols, _ = repo.index(full=True)
     candidates = mine_candidates(symbols)
     cand_path = repo.dir / "vocab.candidates.yaml"
     cand_path.write_text(yaml.safe_dump(candidates, allow_unicode=True, sort_keys=False), encoding="utf-8")
@@ -96,6 +97,28 @@ def cmd_scan(args: argparse.Namespace) -> int:
         [f"{s['ref']}  ({s['kind']}, L{s['lines'][0]}-{s['lines'][1]})" for s in p["symbols"]]
         + [f"-- {p['count']} symbols"]))
     return 0
+
+
+def cmd_index(args: argparse.Namespace) -> int:
+    repo = _repo(args)
+    symbols, stats = repo.index(full=args.full)
+    payload: dict = {"ok": True, "symbols": len(symbols), **stats}
+    if args.verify:
+        diffs = repo.verify_index()
+        payload["consistent"] = not diffs
+        payload["diffs"] = diffs
+        payload["ok"] = not diffs
+
+    def human(p: dict) -> str:
+        line = (f"indexed {p['files']} file(s): {p['extracted']} extracted, {p['reused']} reused, "
+                f"{p['dropped']} dropped -> {p['symbols']} symbols")
+        if "consistent" in p:
+            line += "\nL0 incremental == full: " + ("OK" if p["consistent"] else "MISMATCH")
+            line += "".join(f"\n  {d['ref']}: {d['problem']}" for d in p["diffs"])
+        return line
+
+    _emit(args, payload, human)
+    return 0 if payload["ok"] else 1
 
 
 def cmd_vocab_add(args: argparse.Namespace) -> int:
@@ -187,6 +210,25 @@ def cmd_concept_add(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_concept_bump(args: argparse.Namespace) -> int:
+    """Change the rule itself: bump the version so every occurrence must be re-confirmed."""
+    repo = _repo(args)
+    c = repo.load_concepts().get(args.id)
+    if c is None:
+        raise CliError(f"unknown concept {args.id!r}")
+    old = c.version
+    c.version += 1
+    if args.statement:
+        c.statement = args.statement
+    for item, value in _parse_modifiers(args.modifier).items():
+        c.modifiers[item] = value
+    repo.save_concept(c)
+    payload = {"ok": True, "id": c.id, "from": old, "to": c.version, "statement": c.statement}
+    _emit(args, payload, lambda p: f"{p['id']}: v{p['from']} -> v{p['to']}  ({p['statement']})\n"
+                                   f"  every occurrence is now stale until `diting confirm {p['id']}`")
+    return 0
+
+
 def cmd_concept_list(args: argparse.Namespace) -> int:
     repo = _repo(args)
     concepts = repo.load_concepts()
@@ -224,6 +266,7 @@ def cmd_anchor_add(args: argparse.Namespace) -> int:
         hint = f" (did you mean: {', '.join(close)})" if close else ""
         raise CliError(f"symbol {args.ref} not found{hint}")
     ef = repo.load_edge(concept.id)
+    before = family_hash(ef, symbols)
     occ_id = args.occurrence or path.replace("/", ".").removesuffix(".py") + ":" + symbol
     occ = ef.occurrence(occ_id)
     if occ is None:
@@ -237,6 +280,7 @@ def cmd_anchor_add(args: argparse.Namespace) -> int:
     anchor = Anchor(path=path, symbol=symbol, fingerprint=sym.fingerprint, shape=sym.shape,
                     state="verified", confirmed_version=concept.version)
     occ.anchors = [a for a in occ.anchors if a.ref != anchor.ref] + [anchor]
+    anchor.basis = rebase_after_add(ef, symbols, before)
     repo.save_edges(ef)
     payload = {"ok": True, "concept": concept.id, "occurrence": occ.id, "anchor": anchor.ref,
                "fingerprint": sym.fingerprint}
@@ -318,7 +362,9 @@ def cmd_query(args: argparse.Namespace) -> int:
     return 0
 
 
-def _diff_source(args: argparse.Namespace, repo: Repo):
+def _diff_source(args: argparse.Namespace, repo: Repo, *, optional: bool = False):
+    if optional and not (args.diff or args.base or args.staged):
+        return None
     modes = sum(bool(x) for x in (args.diff, args.base, args.staged))
     if modes > 1:
         raise CliError("use only one of --diff / --base / --staged")
@@ -353,6 +399,63 @@ def cmd_impact(args: argparse.Namespace) -> int:
     return 1 if args.fail_on_review and payload["needs_review"] else 0
 
 
+def cmd_sync(args: argparse.Namespace) -> int:
+    repo = _repo(args)
+    payload = sync(repo, dry_run=args.dry_run).to_dict()
+
+    def human(p: dict) -> str:
+        lines = [f"{c['action']:9} {c['concept']}/{c['occurrence']}  {c['ref']}"
+                 + (f" -> {c['new_ref']}" if c.get("new_ref") else "")
+                 + (f"\n          {c['note']}" if c.get("note") else "") for c in p["changes"]]
+        summary = ", ".join(f"{k} {v}" for k, v in sorted(p["counts"].items())) or "no anchors"
+        lines.append(f"-- {summary}" + (" (dry run, nothing written)" if p["dry_run"] else ""))
+        return "\n".join(lines)
+
+    _emit(args, payload, human)
+    return 0
+
+
+def cmd_confirm(args: argparse.Namespace) -> int:
+    repo = _repo(args)
+    try:
+        payload = confirm(repo, args.concept, args.occurrence, note=args.note or "")
+    except SyncError as e:
+        raise CliError(str(e)) from e
+
+    def human(p: dict) -> str:
+        lines = [f"confirmed {p['concept']} v{p['version']}: {', '.join(p['confirmed'])}"]
+        lines += [f"  {u['occurrence']}: {u['ref']} ({u['was']}" + (", logic changed" if u["logic_changed"] else "")
+                  + ")" for u in p["updated"]]
+        if p["pending_siblings"]:
+            lines.append(f"  still to review: {', '.join(p['pending_siblings'])}")
+        return "\n".join(lines)
+
+    _emit(args, payload, human)
+    return 0
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    repo = _repo(args)
+    payload = check(repo, _diff_source(args, repo, optional=True), verify_index=not args.no_verify_index)
+
+    def human(p: dict) -> str:
+        lines = []
+        for f in p["findings"]:
+            tag = "BLOCK" if f["severity"] == "block" else "warn "
+            lvl = f"[{f['level']}] " if f.get("level") else ""
+            lines.append(f"{tag} {f['code']:18} {lvl}{f['message']}")
+            if f.get("fix"):
+                lines.append(f"      fix: {f['fix']}")
+        if "impact" in p:
+            lines.append(f"impact source: {p['impact']['source']}")
+        lines.append(f"-- {'PASS' if p['ok'] else 'FAIL'}: {p['blocking']} blocking, {p['warnings']} warning(s)"
+                     + ("" if p["index_consistent"] else ", index INCONSISTENT"))
+        return "\n".join(lines)
+
+    _emit(args, payload, human)
+    return 0 if payload["ok"] else 1
+
+
 # ------------------------------------------------------------------ parser
 
 
@@ -373,6 +476,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--grep", help="filter refs by substring")
     s.add_argument("--limit", type=int, default=200)
     s.set_defaults(func=cmd_scan)
+
+    s = sub.add_parser("index", parents=[common], help="update the symbol index incrementally")
+    s.add_argument("--full", action="store_true", help="rebuild from scratch")
+    s.add_argument("--verify", action="store_true", help="L0: check incremental index == full rebuild")
+    s.set_defaults(func=cmd_index)
 
     v = sub.add_parser("vocab", parents=[common], help="manage the controlled vocabulary")
     vs = v.add_subparsers(dest="vocab_cmd", required=True)
@@ -405,6 +513,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_concept_add)
     s = cs.add_parser("list", parents=[common], help="list concepts")
     s.set_defaults(func=cmd_concept_list)
+    s = cs.add_parser("bump", parents=[common], help="the rule changed: bump version, all sites become stale")
+    s.add_argument("id")
+    s.add_argument("--statement", help="new statement")
+    s.add_argument("-m", "--modifier", action="append", help="key=value to set")
+    s.set_defaults(func=cmd_concept_bump)
 
     a = sub.add_parser("anchor", parents=[common], help="manage occurrences and anchors")
     as_ = a.add_subparsers(dest="anchor_cmd", required=True)
@@ -437,6 +550,25 @@ def build_parser() -> argparse.ArgumentParser:
     src.add_argument("--staged", action="store_true", help="only staged changes")
     s.add_argument("--fail-on-review", action="store_true", help="exit 1 if any sibling needs review")
     s.set_defaults(func=cmd_impact)
+
+    s = sub.add_parser("sync", parents=[common], help="re-anchor moved/renamed symbols, flag changed/lost ones")
+    s.add_argument("--dry-run", action="store_true", help="report only, do not write .diting/edges/")
+    s.set_defaults(func=cmd_sync)
+
+    s = sub.add_parser("confirm", parents=[common],
+                       help="sign off occurrences as consistent with the concept (after review)")
+    s.add_argument("concept")
+    s.add_argument("occurrence", nargs="*", help="occurrence ids (default: all)")
+    s.add_argument("--note", help="why this is correct, e.g. 'variant unchanged'")
+    s.set_defaults(func=cmd_confirm)
+
+    s = sub.add_parser("check", parents=[common], help="CI gate: missed sibling changes, lost/stale anchors, index")
+    src = s.add_mutually_exclusive_group()
+    src.add_argument("--diff", metavar="FILE", help="also analyse this unified diff ('-' for stdin)")
+    src.add_argument("--base", metavar="REF", help="also analyse changes since merge-base with REF")
+    src.add_argument("--staged", action="store_true", help="also analyse staged changes")
+    s.add_argument("--no-verify-index", action="store_true", help="skip the L0 incremental==full check")
+    s.set_defaults(func=cmd_check)
     return p
 
 

@@ -4,6 +4,7 @@ scanning source files into a symbol table, and the rebuildable cache."""
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from .model import Concept, EdgeFile, SchemaError, Vocabulary
 DITING_DIR = ".diting"
 CACHE_DIR = ".cache"
 SCHEMA_VERSION = 1
+CACHE_VERSION = 3  # bump when Symbol / extractor output changes
 
 DEFAULT_CONFIG: dict = {
     "version": SCHEMA_VERSION,
@@ -222,26 +224,108 @@ class Repo:
         return symbols
 
     # --------------------------------------------------------------- cache
-    def write_cache(self, symbols: dict[str, Symbol]) -> Path:
+    #
+    # The cache stores, per source file, the content hash and the symbols extracted from it.
+    # ``index()`` re-extracts only files whose content hash changed (incremental); ``scan()``
+    # always re-extracts everything (full). L0 consistency = both must agree exactly.
+
+    def _cache_file(self) -> Path:
+        return self.cache_dir / "symbols.json"
+
+    def _read_file_cache(self) -> dict[str, dict]:
+        p = self._cache_file()
+        if not p.exists():
+            return {}
+        try:
+            payload = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if payload.get("version") != CACHE_VERSION or payload.get("languages") != self.config["languages"]:
+            return {}
+        return payload.get("files") or {}
+
+    def _write_file_cache(self, files: dict[str, dict]) -> Path:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        p = self.cache_dir / "symbols.json"
-        payload = {"version": SCHEMA_VERSION, "symbols": [s.to_dict() for s in symbols.values()]}
-        p.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        p = self._cache_file()
+        payload = {"version": CACHE_VERSION, "languages": self.config["languages"], "files": files}
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        tmp.replace(p)
         return p
 
+    def index(self, *, full: bool = False) -> tuple[dict[str, Symbol], dict[str, int]]:
+        """Bring the symbol cache up to date and return ``(symbols, stats)``.
+
+        Incremental by default: files whose content hash is unchanged reuse cached symbols.
+        """
+        extractors = get_extractors(self.config["languages"])
+        cached = {} if full else self._read_file_cache()
+        files: dict[str, dict] = {}
+        stats = {"files": 0, "reused": 0, "extracted": 0, "dropped": 0}
+        for p, rel in self.iter_source_files():
+            ex = next((e for e in extractors if p.suffix in e.suffixes), None)
+            if ex is None:
+                continue
+            try:
+                data = p.read_bytes()
+            except OSError:
+                continue
+            digest = hashlib.sha1(data).hexdigest()
+            stats["files"] += 1
+            entry = cached.get(rel)
+            if entry is not None and entry.get("sha") == digest:
+                files[rel] = entry
+                stats["reused"] += 1
+                continue
+            syms = ex.extract(p, rel)
+            files[rel] = {"sha": digest, "symbols": [s.to_dict() for s in syms]}
+            stats["extracted"] += 1
+        stats["dropped"] = len(set(cached) - set(files))
+        self._write_file_cache(files)
+        return _flatten(files), stats
+
+    def write_cache(self, symbols: dict[str, Symbol]) -> Path:
+        """Compatibility helper: rebuild the cache from scratch (``symbols`` is ignored)."""
+        self.index(full=True)
+        return self._cache_file()
+
     def read_cache(self) -> dict[str, Symbol] | None:
-        p = self.cache_dir / "symbols.json"
-        if not p.exists():
-            return None
-        payload = json.loads(p.read_text(encoding="utf-8"))
-        if payload.get("version") != SCHEMA_VERSION:
-            return None
-        return {s["path"] + "#" + s["qualname"]: Symbol.from_dict(s) for s in payload["symbols"]}
+        files = self._read_file_cache()
+        return _flatten(files) if files else None
 
     def symbols(self, refresh: bool = False) -> dict[str, Symbol]:
-        cached = None if refresh else self.read_cache()
-        if cached is not None:
-            return cached
-        syms = self.scan()
-        self.write_cache(syms)
-        return syms
+        """Current symbols. ``refresh`` brings the cache up to date (incrementally)."""
+        if not refresh:
+            cached = self.read_cache()
+            if cached is not None:
+                return cached
+        return self.index()[0]
+
+    def verify_index(self) -> list[dict]:
+        """L0 consistency: the incremental index must equal a full rebuild.
+
+        Returns a list of differences (empty when consistent). Does not rewrite the cache
+        with the full result, so a broken incremental path stays observable.
+        """
+        incremental, _ = self.index()
+        full = self.scan()
+        diffs: list[dict] = []
+        for ref in sorted(set(incremental) | set(full)):
+            a, b = incremental.get(ref), full.get(ref)
+            if a is None:
+                diffs.append({"ref": ref, "problem": "missing from incremental index"})
+            elif b is None:
+                diffs.append({"ref": ref, "problem": "stale entry in incremental index"})
+            elif a.to_dict() != b.to_dict():
+                fields = sorted(k for k, v in a.to_dict().items() if b.to_dict().get(k) != v)
+                diffs.append({"ref": ref, "problem": "differs: " + ", ".join(fields)})
+        return diffs
+
+
+def _flatten(files: dict[str, dict]) -> dict[str, Symbol]:
+    out: dict[str, Symbol] = {}
+    for rel in sorted(files):
+        for d in files[rel].get("symbols", []):
+            s = Symbol.from_dict(d)
+            out[s.ref] = s
+    return out
