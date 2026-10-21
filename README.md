@@ -42,6 +42,26 @@ diting lint        # 有 error 时退出码为 1，可直接接入 CI
 
 所有命令都支持 `--json`，供 Agent 消费。完整示例见 [`examples/shop`](examples/shop)。
 
+## 查询与影响分析（PR-2）
+
+```bash
+diting query 会员折扣怎么取整          # 一句话 → 概念 → 所有出现点（含当前行号、variant、是否漂移）
+diting query "VIP discount rounding"  # 同义词、上位词（is-a）都会参与匹配，每条结果附带匹配理由
+
+diting impact                         # 工作区相对 HEAD 的改动（含未跟踪文件）
+diting impact --staged                # 只看已暂存的改动
+diting impact --base origin/main      # 相对 merge-base 的改动，适合 PR / CI
+diting impact --diff change.diff      # 任意 unified diff（'-' 读 stdin）
+diting impact --base main --fail-on-review   # 有未同步的兄弟出现点时退出码为 1
+```
+
+`impact` 把改动行映射到符号（新旧两侧都会解析），再映射到锚点与概念，输出：
+
+- `changed`：本次改了逻辑（或符号消失）的出现点；
+- `review`：同一概念下**没改**的兄弟出现点——这正是"悄悄分叉"的风险点；
+- 只改注释/格式（指纹不变）记为 `cosmetic`，不会触发 review；
+- `unindexed`：改了逻辑但尚未登记到任何概念的符号，提示补索引。
+
 ## 仓库内布局
 
 ```
@@ -83,7 +103,7 @@ YAML 是唯一事实源，便于 code review；`.cache/` 中的一切都能由�
 ## 路线图
 
 - [x] **PR-1** 骨架：schema、`init / scan / vocab / concept / anchor / lint / status`、Python 提取器
-- [ ] **PR-2** `query`（一句话 → 出现点，走同义词/上位词）与 `impact --diff`（改动 → 受影响概念）
+- [x] **PR-2** `query`（一句话 → 出现点，走同义词/上位词）与 `impact --diff`（改动 → 受影响概念）
 - [ ] **PR-3** `sync`（自动重锚定）与 `check`（CI 门禁：漏改、过期、按等级分级），增量 = 全量一致性校验
 - [ ] **PR-4** `skill`（生成 Agent 使用的 SKILL.md）、GitHub Action 模板、端到端 demo
 - [ ] 之后：tree-sitter 多语言提取、性质测试生成、锚点变异测试、基于 git 历史的效果评测集

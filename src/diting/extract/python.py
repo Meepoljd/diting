@@ -76,8 +76,15 @@ class PythonExtractor:
 
     def extract(self, path: Path, rel: str) -> list[Symbol]:
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
-        except (SyntaxError, UnicodeDecodeError, ValueError):
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            return []
+        return self.extract_text(text, rel)
+
+    def extract_text(self, text: str, rel: str) -> list[Symbol]:
+        try:
+            tree = ast.parse(text, filename=rel)
+        except (SyntaxError, ValueError):
             return []
         out: list[Symbol] = []
 
@@ -94,7 +101,8 @@ class PythonExtractor:
                             path=rel,
                             qualname=qual,
                             kind=kind,
-                            start_line=child.lineno,
+                            # decorators belong to the symbol (they are part of its fingerprint)
+                            start_line=min([child.lineno, *(d.lineno for d in child.decorator_list)]),
                             end_line=getattr(child, "end_lineno", child.lineno) or child.lineno,
                             fingerprint=_hash(_normalize(child, anonymize=False)),
                             shape=_hash(_normalize(child, anonymize=True)),

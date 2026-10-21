@@ -1,6 +1,6 @@
 """diting command line.
 
-PR-1 commands: init, scan, vocab, concept, anchor, lint, status.
+Commands: init, scan, vocab, concept, anchor, lint, status, query, impact.
 Every command accepts ``--json`` for compact, agent-readable output.
 """
 
@@ -16,7 +16,9 @@ import yaml
 
 from . import __version__
 from .bootstrap import mine_candidates
+from .impact import GitError, file_diff_source, git_diff_source, impact
 from .lint import lint
+from .query import query
 from .model import Anchor, Concept, Occurrence, SchemaError, Term
 from .store import DITING_DIR, NotInitialized, Repo
 
@@ -287,6 +289,70 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_query(args: argparse.Namespace) -> int:
+    repo = _repo(args)
+    sentence = " ".join(args.sentence)
+    payload = query(repo, sentence, limit=args.limit, min_score=args.min_score,
+                    include_removed=args.include_removed)
+
+    def human(p: dict) -> str:
+        m = p["matched"]
+        terms = m["entities"] + m["predicates"] + m["contexts"]
+        lines = [f"query: {p['query']}", f"  vocabulary hits: {', '.join(terms) or '-'}"]
+        if not p["concepts"]:
+            lines.append("  (no matching concept — try synonyms, or add terms with `diting vocab add`)")
+        for c in p["concepts"]:
+            lines.append(f"\n{c['id']}  [{c['lifecycle']}/{c['level']} v{c['version']}]  score {c['score']}")
+            lines.append(f"  {c['statement']}")
+            lines.append(f"  why: {'; '.join(c['reasons'])}")
+            for o in c["occurrences"]:
+                var = f"  (variant: {o['variant']})" if o.get("variant") else ""
+                lines.append(f"  - {o['id']}{var}")
+                for a in o["anchors"]:
+                    where = f"L{a['lines'][0]}-{a['lines'][1]}" if a["resolved"] else "UNRESOLVED"
+                    flag = "  drifted" if a.get("drift") else ""
+                    lines.append(f"      {a['ref']}  {where}  [{a['state']}]{flag}")
+        return "\n".join(lines)
+
+    _emit(args, payload, human)
+    return 0
+
+
+def _diff_source(args: argparse.Namespace, repo: Repo):
+    modes = sum(bool(x) for x in (args.diff, args.base, args.staged))
+    if modes > 1:
+        raise CliError("use only one of --diff / --base / --staged")
+    try:
+        if args.diff:
+            text = sys.stdin.read() if args.diff == "-" else Path(args.diff).read_text(encoding="utf-8")
+            return file_diff_source(repo.root, text, label=f"diff {args.diff}")
+        return git_diff_source(repo.root, base=args.base, staged=args.staged)
+    except (GitError, OSError) as e:
+        raise CliError(str(e)) from e
+
+
+def cmd_impact(args: argparse.Namespace) -> int:
+    repo = _repo(args)
+    payload = impact(repo, _diff_source(args, repo))
+
+    def human(p: dict) -> str:
+        lines = [f"impact of {p['source']}: {len(p['files'])} file(s), {len(p['changed_symbols'])} symbol(s)"]
+        for c in p["concepts"]:
+            lines.append(f"\n{c['id']}  [{c['level']}]  — {c['statement']}")
+            for o in c["occurrences"]:
+                mark = {"changed": "M", "missing": "!", "cosmetic": "~", "untouched": " "}[o["status"]]
+                need = "  <- review" if o["id"] in c["review"] else ""
+                var = f"  (variant: {o['variant']})" if o.get("variant") else ""
+                lines.append(f"  [{mark}] {o['id']}  {', '.join(o['anchors'])}{var}{need}")
+        if p["unindexed"]:
+            lines.append("\nchanged symbols not in the index: " + ", ".join(p["unindexed"]))
+        lines.append(f"\n-- {p['needs_review']} concept(s) with sibling occurrences to review")
+        return "\n".join(lines)
+
+    _emit(args, payload, human)
+    return 1 if args.fail_on_review and payload["needs_review"] else 0
+
+
 # ------------------------------------------------------------------ parser
 
 
@@ -355,6 +421,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("status", parents=[common], help="summary of the index")
     s.set_defaults(func=cmd_status)
+
+    s = sub.add_parser("query", parents=[common], help="find the concepts (and code sites) a sentence is about")
+    s.add_argument("sentence", nargs="+", help="e.g. 会员折扣怎么取整")
+    s.add_argument("--limit", type=int, default=10)
+    s.add_argument("--min-score", type=float, default=0.5)
+    s.add_argument("--include-removed", action="store_true")
+    s.set_defaults(func=cmd_query)
+
+    s = sub.add_parser("impact", parents=[common],
+                       help="map a code change to concepts and list sibling occurrences to review")
+    src = s.add_mutually_exclusive_group()
+    src.add_argument("--diff", metavar="FILE", help="unified diff file ('-' for stdin)")
+    src.add_argument("--base", metavar="REF", help="compare working tree with merge-base of REF and HEAD")
+    src.add_argument("--staged", action="store_true", help="only staged changes")
+    s.add_argument("--fail-on-review", action="store_true", help="exit 1 if any sibling needs review")
+    s.set_defaults(func=cmd_impact)
     return p
 
 
