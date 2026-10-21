@@ -43,6 +43,10 @@ class Symbol:
         return cls(**d)
 
 
+class ExtractorError(Exception):
+    """An extractor cannot run (unknown language, missing optional grammar, ABI mismatch)."""
+
+
 class Extractor(Protocol):
     language: str
     suffixes: tuple[str, ...]
@@ -50,13 +54,30 @@ class Extractor(Protocol):
     def extract(self, path: Path, rel: str) -> list[Symbol]: ...
 
 
+def supported_languages() -> list[str]:
+    from .treesitter import SPECS
+
+    return ["python", *SPECS]
+
+
+def language_suffixes() -> dict[str, tuple[str, ...]]:
+    """File suffixes per supported language (no grammar import needed)."""
+    from .python import PythonExtractor
+    from .treesitter import SPECS
+
+    return {"python": PythonExtractor.suffixes, **{k: v.suffixes for k, v in SPECS.items()}}
+
+
 def get_extractors(languages: Iterable[str]) -> list[Extractor]:
     from .python import PythonExtractor
+    from .treesitter import SPECS, TreeSitterExtractor
 
-    registry = {"python": PythonExtractor}
     out: list[Extractor] = []
     for lang in languages:
-        if lang not in registry:
-            raise ValueError(f"unsupported language: {lang} (supported: {', '.join(registry)})")
-        out.append(registry[lang]())
+        if lang == "python":
+            out.append(PythonExtractor())
+        elif lang in SPECS:
+            out.append(TreeSitterExtractor(SPECS[lang]))
+        else:
+            raise ExtractorError(f"unsupported language: {lang} (supported: {', '.join(supported_languages())})")
     return out

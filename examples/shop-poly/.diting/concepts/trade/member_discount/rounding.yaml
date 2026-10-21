@@ -1,0 +1,13 @@
+id: trade.member_discount.rounding
+statement: 会员折扣金额四舍五入保留两位小数
+context: 交易
+subject: 会员
+predicate: 享受
+object: 折扣
+modifiers:
+  condition: 订单金额 >= 200
+  manner: 四舍五入保留两位
+lifecycle: active
+level: critical
+verify: property
+version: 1

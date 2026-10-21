@@ -19,6 +19,7 @@ BLOCK sibling-review  [critical] trade.member_discount.rounding/web-display: sib
 - [为什么需要它](#为什么需要它)
 - [核心概念](#核心概念)
 - [安装](#安装)
+- [支持的语言](#支持的语言)
 - [五分钟上手：在示例仓库里体验一次漏改](#五分钟上手在示例仓库里体验一次漏改)
 - [在你自己的仓库落地](#在你自己的仓库落地)
 - [日常工作流](#日常工作流)
@@ -30,6 +31,7 @@ BLOCK sibling-review  [critical] trade.member_discount.rounding/web-display: sib
 - [配置](#配置)
 - [仓库内布局与数据格式](#仓库内布局与数据格式)
 - [设计取舍](#设计取舍)
+- [为什么是 tree-sitter 而不是 LSP](#为什么是-tree-sitter-而不是-lsp)
 - [当前限制](#当前限制)
 - [开发与回归](#开发与回归)
 - [路线图](#路线图)
@@ -64,10 +66,18 @@ diting 不要求你合并代码，而是在仓库里维护一层**人能读、�
 
 ## 安装
 
-要求 Python ≥ 3.10，唯一运行时依赖是 PyYAML。目前未发布到 PyPI，从 GitHub 安装：
+要求 Python ≥ 3.10。核心只依赖 PyYAML（Python 支持开箱即用）；其他语言的语法解析器（tree-sitter grammar）是可选依赖，按需安装。目前未发布到 PyPI，从 GitHub 安装：
 
 ```bash
+# 只用 Python
 pip install "diting @ git+https://github.com/Meepoljd/diting@main"
+
+# 全部语言
+pip install "diting[all] @ git+https://github.com/Meepoljd/diting@main"
+
+# 只装需要的语言（extras 可组合）
+pip install "diting[go,java,typescript] @ git+https://github.com/Meepoljd/diting@main"
+
 diting --version
 ```
 
@@ -81,8 +91,41 @@ pip install "diting @ git+https://github.com/Meepoljd/diting@<commit-sha>"
 
 ```bash
 git clone https://github.com/Meepoljd/diting && cd diting
-pip install -e ".[dev]"
+pip install -e ".[dev,all]"
 ```
+
+## 支持的语言
+
+| 语言 | 后缀 | extra | 符号示例 |
+|---|---|---|---|
+| Python | `.py` | （内置，基于 `ast`） | `DiscountCalc.apply`、`refund_member_discount` |
+| Go | `.go` | `go` | `Calc.Apply`（接收者方法挂到类型下）、`Top` |
+| Java | `.java` | `java` | `Calc.apply`、构造器 `Calc.Calc`、重载 `Calc.apply~2` |
+| Kotlin | `.kt` `.kts` | `kotlin` | `Calc.apply`、`Calc.Companion.make`、`O.f` |
+| JavaScript | `.js` `.mjs` `.cjs` `.jsx` | `javascript` | `Calc.apply`、`const g = () => …` 记为 `g`、对象方法 `api.h` |
+| TypeScript | `.ts` `.mts` `.cts` `.tsx` | `typescript` | `Calc.apply`、`I.m`、`NS.inner`；`.tsx` 用 TSX 语法 |
+| Rust | `.rs` | `rust` | `impl Calc` / `impl T for Calc` 中的方法都记为 `Calc.m`、`inner.f` |
+| C# | `.cs` | `csharp` | `Calc.Apply`、`Calc.Calc`、`Calc.~Calc` |
+| C | `.c` `.h` | `c` | `apply`、`struct Calc` |
+| C++ | `.cc` `.cpp` `.cxx` `.hpp` `.h` … | `cpp` | `Calc.apply`、类外定义 `Calc::other` 记为 `Calc.other`、`n.f` |
+| Ruby | `.rb` | `ruby` | `Calc.apply`、`Calc.self.make`、`M.f` |
+| PHP | `.php` | `php` | `Calc.apply`、`top` |
+
+约定：
+
+- 锚点写法统一为 `path/to/file.ext#Qual.name`，限定名用 `.` 连接（类、命名空间、模块、impl 目标都会成为前缀）。
+- 同一作用域内的同名符号（重载）依次记为 `name`、`name~2`、`name~3`。
+- 装饰器、注解、`export` 包装都计入符号的行范围；语法错误的文件不会让提取崩溃，能解析的部分照常提取。
+- 所有语言共享同一套 fingerprint / shape 语义，`sync`、`impact`、`check` 对多语言仓库无差别工作，一个概念的多个出现点可以跨语言（见 [`examples/shop-poly`](examples/shop-poly)：结算用 Go、退款用 Java、展示用 TypeScript）。
+
+`diting init` 会自动统计仓库中各语言的文件数，只启用已安装 grammar 的语言，并提示缺失的 extra；也可以显式指定：
+
+```bash
+diting init                                   # 自动检测
+diting init --languages go,java,typescript    # 显式指定
+```
+
+之后可以在 `.diting/config.yaml` 的 `languages` / `include` 中增减。缺少 grammar 时命令会报错并给出安装命令（退出码 2）。`.h` 同时属于 C 和 C++：自动检测时不计入；两者都启用时，交给 `languages` 中排在前面的语言（`init` 生成的顺序里 C++ 在前）。
 
 ## 五分钟上手：在示例仓库里体验一次漏改
 
@@ -139,7 +182,7 @@ cd your-repo
 diting init
 ```
 
-`init` 会创建 `.diting/`、扫描所有 Python 符号，并从标识符里挖掘候选词表写入 `.diting/vocab.candidates.yaml`。然后按下面四步建立第一条概念：
+`init` 会创建 `.diting/`、检测仓库语言、扫描所有符号，并从标识符里挖掘候选词表写入 `.diting/vocab.candidates.yaml`。然后按下面四步建立第一条概念：
 
 ```bash
 # 1. 词表：把候选词提升为正式术语（同义词让中英文、代码命名都能命中）
@@ -207,6 +250,7 @@ git add .github/workflows/diting.yml && git commit -m "ci: diting gate"
 - `actions/checkout` 使用 `fetch-depth: 0`，以便计算与目标分支的 merge-base；
 - **pull_request**：运行 `diting check --base "origin/<base_ref>"`，在签收状态检查之上叠加整个 PR 的 diff 影响分析；
 - **push 到 main**：运行 `diting check`；
+- 非 Python 仓库生成模板时，用 `--pip` 带上对应 extra，例如 `--pip "diting[all] @ git+https://github.com/Meepoljd/diting@<commit-sha>"`；
 - 有阻断级发现时退出码为 1，PR 变红。是否阻断由概念等级与 [`gate` 配置](#配置) 决定。
 
 把这个 job 设为分支保护的必需检查（Settings → Branches → Require status checks），漏改就无法合并。
@@ -241,12 +285,12 @@ diting skill --stdout > .claude/skills/diting/SKILL.md   # 或直接放进 Agent
 
 | 命令 | 说明 |
 |---|---|
-| `diting init` | 创建 `.diting/` 布局，扫描符号，挖掘候选词表 |
+| `diting init [--languages go,java,...]` | 创建 `.diting/` 布局，检测语言，扫描符号，挖掘候选词表 |
 | `diting vocab add {context\|entity\|predicate} <名称> [-s 同义词 ...] [--hypernym 上位实体] [--class compute\|validate\|display\|persist\|permission\|other] [--context C] [--description D]` | 新增或扩展术语 |
 | `diting vocab list` | 查看词表 |
 | `diting concept add <id> "<陈述>" -S <主语> -P <谓语> -O <宾语> [-m key=value ...] [--context C] [--level critical\|normal\|info] [--lifecycle draft\|active\|deprecated\|removed] [--force]` | 声明概念；id 为点分小写下划线，如 `trade.member_discount.rounding` |
 | `diting concept list` | 列出概念 |
-| `diting anchor add <概念id> <path>#<Qual.name> [-o 出现点id] [--variant "差异"] [--channel App\|Web\|backend]` | 把出现点挂到代码符号；同一出现点可挂多个锚点 |
+| `diting anchor add <概念id> <path/to/file.ext>#<Qual.name> [-o 出现点id] [--variant "差异"] [--channel App\|Web\|backend]` | 把出现点挂到代码符号；同一出现点可挂多个锚点 |
 | `diting lint` | 结构、词表、锚点有效性检查 |
 | `diting status` | 索引概况 |
 
@@ -291,12 +335,14 @@ diting skill --stdout > .claude/skills/diting/SKILL.md   # 或直接放进 Agent
 
 ### 符号与哈希
 
-diting 用 Python 的 `ast` 提取每个函数、方法、类，生成两个哈希：
+Python 用标准库 `ast`，其他语言用 [tree-sitter](https://tree-sitter.github.io/) 语法树，提取每个函数、方法、类（含 struct / interface / trait / enum 等类型声明），生成两个哈希：
 
 | 哈希 | 计算方式 | 不受影响 | 会变化 |
 |---|---|---|---|
 | **fingerprint** | 归一化 AST：去掉注释、docstring、格式，以及符号**自身的名字** | 移动、改名、重排版、加注释 | 改逻辑、改内部标识符 |
 | **shape** | 在 fingerprint 基础上匿名化所有标识符 | 以上 + 内部变量改名 | 改逻辑结构 |
+
+tree-sitter 语言的归一化方式：序列化具名语法节点类型与叶子 token，丢弃注释节点和空白；符号自身的名字节点被抹掉；shape 再把所有标识符类节点替换为占位符。所以这两个哈希在不同语言间语义一致（只在同一语言内比较）。
 
 fingerprint 不含自身名字，所以"纯改名"在 diting 看来就是一次移动，可以自动跟随；只改注释、格式的提交不会触发任何告警。
 
@@ -458,9 +504,21 @@ occurrences:
 - **按等级分级门禁。** 钱、安全、合规用 `critical` 阻断；不那么重要的规则可以先 `warn` 或 `off`，便于渐进落地。
 - **自检优先。** 增量缓存必须与全量重建一致，否则门禁直接失败，而不是给出不可信的结果。
 
+## 为什么是 tree-sitter 而不是 LSP
+
+LSP（Language Server Protocol）确实覆盖了很多语言，但它解决的是另一个问题：
+
+- **LSP 是编辑器协议，不是解析库。** 每种语言要起一个常驻的语言服务器进程（gopls、jdtls、tsserver、rust-analyzer……），各自要安装工具链，很多还需要项目能构建、依赖已下载（Maven/Gradle、`node_modules`、`cargo fetch`）才能给出正确结果。放进 CI 门禁里又慢又重，结果还会随工具链版本、索引是否完成而变化。
+- **LSP 不暴露归一化语法树。** 它提供的是 document symbols、references、hover 等面向编辑器的结果，拿不到"去掉注释和自身名字的语法结构"，没法算 fingerprint / shape——而这正是 `sync` 跟随改名、`check` 判断逻辑是否变化的基础。
+- **门禁必须确定、可复现。** diting 的承诺是"门禁结果只取决于仓库内容"。tree-sitter 是进程内的纯函数：同样的源码 + 同样的 grammar 版本 → 同样的语法树，离线、毫秒级、不需要构建项目，而且有几十种语言的现成 grammar，都以 Python wheel 发布。
+
+所以 diting 用 tree-sitter 负责**提取与哈希**（门禁路径）。LSP 更适合作为将来的补充：用"查找引用 / 调用层级"帮人或 Agent **发现**可能的重复实现、生成候选出现点——这一步允许慢、允许不确定，不进入门禁。
+
 ## 当前限制
 
-- **只支持 Python。** 符号提取基于 Python `ast`；多语言（tree-sitter）在路线图中。
+- **多语言依赖可选 grammar。** 非 Python 语言需安装对应 extra；锚点粒度、限定名规则见[支持的语言](#支持的语言)。`.h` 的归属见该节说明。
+- **tree-sitter 只看语法，不做类型解析。** 例如 Go 的接收者方法按接收者类型名归属、C++ 类外定义按 `A::f` 归属，不跨文件解析 `typedef` / 别名。
+- **Python 的 fingerprint 去掉 docstring；其他语言只去掉注释节点**（如 Python 风格的"首个字符串字面量"不会被特殊处理）。
 - **锚点粒度是函数 / 方法 / 类。** 同一函数里只改了与规则无关的部分，也会触发复核。
 - **不做语义判断。** diting 能发现"同规则的几处实现中有一处变了"，但不会判断新实现是否符合陈述；这一步由签收者负责。
 - **概念与锚点需要人工或 Agent 建立。** `init` 只提供候选词，不会自动发现重复实现。
@@ -470,11 +528,11 @@ occurrences:
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q                                            # 单元 / 集成测试
+python -m pytest -q                                            # 单元 / 集成测试（未装的 grammar 对应用例自动 skip）
 DITING="python -m diting" PYTHONPATH=src bash scripts/e2e.sh    # 端到端回归（已安装时直接 bash scripts/e2e.sh）
 ```
 
-本仓库 CI（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）在 Python 3.10–3.13 上对每个 PR 和 main 运行：
+本仓库 CI（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）在 Python 3.10–3.13 上安装 `.[dev,all]`，对每个 PR 和 main 运行：
 
 1. `pytest -q`；
 2. `bash scripts/e2e.sh`：在 `examples/shop` 的临时 git 副本上，用**真实 CLI** 走完整工作流，并逐步断言退出码与 JSON 字段，覆盖以下场景：
@@ -488,6 +546,7 @@ DITING="python -m diting" PYTHONPATH=src bash scripts/e2e.sh    # 端到端回�
    - info 级只告警，`gate` 设为 off 时被抑制；
    - 增量索引 == 全量重建，损坏的缓存能被发现；
    - `ci-template` 产物是合法的工作流；
+   - 多语言（`examples/shop-poly`，Go + Java + TypeScript）：query 跨语言命中三处、只改 Java 被拦、只签收 Java 仍被拦、同步改 Go 并签收全部后放行、TS 方法改名由 `sync` 跟随、只改 Go 注释不告警、增量 == 全量（CI 中设置 `DITING_E2E_REQUIRE_POLYGLOT=1`，缺 grammar 直接失败而非跳过）；
 3. `diting ci-template | diff - docs/diting-check.yml`：模板快照一致性。
 
 源码结构：
@@ -495,6 +554,8 @@ DITING="python -m diting" PYTHONPATH=src bash scripts/e2e.sh    # 端到端回�
 | 模块 | 职责 |
 |---|---|
 | `extract/python.py` | Python 符号提取、fingerprint / shape |
+| `extract/treesitter.py` | tree-sitter 多语言提取：每种语言一份声明式 `LangSpec`，共享哈希实现 |
+| `extract/__init__.py` | 语言注册表、`get_extractors`、缺失 grammar 的安装提示 |
 | `store.py` | `.diting/` 读写、符号缓存、增量索引 |
 | `model.py` | 词表、概念、出现点、锚点数据模型 |
 | `bootstrap.py` | `init` 的候选词挖掘 |
@@ -512,7 +573,8 @@ DITING="python -m diting" PYTHONPATH=src bash scripts/e2e.sh    # 端到端回�
 - [x] **PR-2** `query`（一句话 → 出现点，走同义词 / 上位词）与 `impact`（改动 → 受影响概念 → 兄弟复核）
 - [x] **PR-3** `sync`（自动重锚定）、`confirm`、`concept bump`、`check`（CI 门禁：漏改、过期、按等级分级），增量 == 全量一致性校验
 - [x] **PR-4** `skill`（Agent 指南）、`ci-template`（GitHub Actions 门禁）、端到端回归接入 CI
-- [ ] tree-sitter 多语言提取（TypeScript / Go / Java）
+- [x] **PR-6** tree-sitter 多语言提取：Go / Java / Kotlin / JavaScript / TypeScript / Rust / C# / C / C++ / Ruby / PHP，`init` 自动检测语言
+- [ ] 可选 LSP 补充：用语言服务器的"查找引用"辅助发现候选出现点（不进入门禁）
 - [ ] 发布到 PyPI，提供可直接引用的 GitHub Action
 - [ ] changesets：一次规则变更的计划、执行与审计记录
 - [ ] 根据概念陈述生成性质测试；锚点变异测试

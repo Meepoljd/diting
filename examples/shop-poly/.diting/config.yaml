@@ -1,0 +1,27 @@
+version: 1
+languages:
+- go
+- java
+- typescript
+include:
+- '**/*.go'
+- '**/*.java'
+- '**/*.ts'
+- '**/*.mts'
+- '**/*.cts'
+- '**/*.tsx'
+exclude:
+- .git/**
+- .diting/**
+- .venv/**
+- venv/**
+- '**/node_modules/**'
+- '**/__pycache__/**'
+- build/**
+- dist/**
+- target/**
+- '**/vendor/**'
+gate:
+  critical: block
+  normal: block
+  info: warn

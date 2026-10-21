@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 import yaml
@@ -17,11 +17,12 @@ import yaml
 from . import __version__
 from .bootstrap import mine_candidates
 from .check import check
+from .extract import ExtractorError, get_extractors, supported_languages
 from .impact import GitError, file_diff_source, git_diff_source, impact
 from .lint import lint
 from .query import query
 from .model import Anchor, Concept, Occurrence, SchemaError, Term
-from .store import DITING_DIR, NotInitialized, Repo
+from .store import DITING_DIR, NotInitialized, Repo, detect_languages
 from .sync import SyncError, confirm, family_hash, rebase_after_add, sync
 from .templates import DEFAULT_PIP_SPEC, SKILL_MD, ci_workflow
 
@@ -49,9 +50,29 @@ def _repo(args: argparse.Namespace) -> Repo:
 # ---------------------------------------------------------------- commands
 
 
+def _init_languages(repo: Repo, requested: str | None) -> tuple[list[str] | None, dict, list[str]]:
+    """Languages for a first init: explicit ``--languages`` or auto-detected (installed only)."""
+    if repo.initialized:
+        return None, {}, []
+    if requested:
+        langs = [x.strip() for x in requested.split(",") if x.strip()]
+        get_extractors(langs)  # unknown language / missing grammar -> ExtractorError (exit 2)
+        return langs, {}, []
+    detected = detect_languages(repo.root)
+    langs, missing = [], []
+    for lang in detected:
+        try:
+            get_extractors([lang])
+            langs.append(lang)
+        except ExtractorError:
+            missing.append(lang)
+    return langs or ["python"], detected, missing
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     repo = Repo(Path(args.root).resolve())
-    created = repo.init_layout()
+    languages, detected, missing = _init_languages(repo, args.languages)
+    created = repo.init_layout(languages)
     symbols, _ = repo.index(full=True)
     candidates = mine_candidates(symbols)
     cand_path = repo.dir / "vocab.candidates.yaml"
@@ -59,6 +80,9 @@ def cmd_init(args: argparse.Namespace) -> int:
     payload = {
         "root": str(repo.root),
         "created": created,
+        "languages": repo.config["languages"],
+        "detected": detected,
+        "missing_grammars": missing,
         "symbols": len(symbols),
         "candidates": {
             "file": f"{DITING_DIR}/vocab.candidates.yaml",
@@ -70,6 +94,14 @@ def cmd_init(args: argparse.Namespace) -> int:
     def human(p: dict) -> str:
         lines = [f"谛听 initialized at {p['root']}"]
         lines += [f"  + {c}" for c in p["created"]] or ["  (layout already present)"]
+        lines.append(f"  languages: {', '.join(p['languages'])}")
+        if p["missing_grammars"]:
+            extras = ",".join(p["missing_grammars"])
+            lines.append(
+                f"  ! also found {extras} sources but the grammar is not installed: "
+                f'pip install "diting[{extras}] @ git+https://github.com/Meepoljd/diting@main", '
+                f"then add them to languages/include in {DITING_DIR}/config.yaml"
+            )
         lines.append(f"  scanned {p['symbols']} symbols")
         lines.append(f"  candidate entities:   {', '.join(p['candidates']['entities']) or '-'}")
         lines.append(f"  candidate predicates: {', '.join(p['candidates']['predicates']) or '-'}")
@@ -258,7 +290,7 @@ def cmd_anchor_add(args: argparse.Namespace) -> int:
     if concept is None:
         raise CliError(f"unknown concept {args.concept!r}")
     if "#" not in args.ref:
-        raise CliError("ref must look like path/to/file.py#Qual.name")
+        raise CliError("ref must look like path/to/file.ext#Qual.name")
     path, symbol = args.ref.split("#", 1)
     symbols = repo.symbols(refresh=True)
     sym = symbols.get(args.ref)
@@ -268,7 +300,7 @@ def cmd_anchor_add(args: argparse.Namespace) -> int:
         raise CliError(f"symbol {args.ref} not found{hint}")
     ef = repo.load_edge(concept.id)
     before = family_hash(ef, symbols)
-    occ_id = args.occurrence or path.replace("/", ".").removesuffix(".py") + ":" + symbol
+    occ_id = args.occurrence or str(PurePosixPath(path).with_suffix("")).replace("/", ".") + ":" + symbol
     occ = ef.occurrence(occ_id)
     if occ is None:
         occ = Occurrence(id=occ_id, variant=args.variant, channel=args.channel)
@@ -512,6 +544,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     s = sub.add_parser("init", parents=[common], help="create .diting/ and mine candidate vocabulary")
+    s.add_argument(
+        "--languages",
+        help=f"comma separated, e.g. python,go,typescript (default: auto-detect; supported: "
+        f"{', '.join(supported_languages())})",
+    )
     s.set_defaults(func=cmd_init)
 
     s = sub.add_parser("scan", parents=[common], help="rebuild the symbol cache and list symbols")
@@ -565,7 +602,7 @@ def build_parser() -> argparse.ArgumentParser:
     as_ = a.add_subparsers(dest="anchor_cmd", required=True)
     s = as_.add_parser("add", parents=[common], help="anchor a concept occurrence to a code symbol")
     s.add_argument("concept")
-    s.add_argument("ref", help="path/to/file.py#Qual.name")
+    s.add_argument("ref", help="path/to/file.ext#Qual.name, e.g. svc/pricing/discount.go#Calc.Apply")
     s.add_argument("-o", "--occurrence", help="occurrence id (default derived from ref)")
     s.add_argument("--variant", help="registered deviation at this site, e.g. '展示时取整到元'")
     s.add_argument("--channel", help="e.g. App / Web / backend")
@@ -631,7 +668,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (CliError, SchemaError) as e:
+    except (CliError, SchemaError, ExtractorError) as e:
         code = getattr(e, "code", 2)
         if getattr(args, "json", False):
             print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))

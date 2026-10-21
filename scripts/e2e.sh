@@ -215,4 +215,54 @@ assert any("diting check --base" in s.get("run", "") for s in steps)
 EOF
 echo "  ok: workflow"
 
+# ------------------------------------------------------- polyglot (tree-sitter)
+if "$PY" -c "import tree_sitter_go, tree_sitter_java, tree_sitter_typescript" 2>/dev/null; then
+  say "polyglot: the committed index of examples/shop-poly (Go + Java + TypeScript) passes as-is"
+  REPO="$WORK/shop-poly"
+  mkdir -p "$REPO"
+  (cd "$ROOT/examples/shop-poly" && tar --exclude=.cache -cf - .) | (cd "$REPO" && tar -xf -)
+  g init -q -b main
+  commit "poly"
+  dt 0 check
+  expect 'j["ok"] and j["findings"] == [] and j["index_consistent"]' "fingerprints are stable across machines"
+  dt 0 query 会员折扣怎么取整
+  expect '{o["id"] for o in j["concepts"][0]["occurrences"]} == {"settlement", "refund", "web-display"}'
+
+  say "polyglot: changing the rule in Java only blocks the Go and TypeScript siblings"
+  g checkout -qb feature/java-only
+  sub svc/refund/src/main/java/shop/refund/RefundService.java "RoundingMode.HALF_UP" "RoundingMode.DOWN"
+  commit "refund rounds down"
+  dt 1 impact --base main --fail-on-review
+  expect 'j["concepts"][0]["changed"] == ["refund"] and set(j["concepts"][0]["review"]) == {"settlement", "web-display"}'
+  dt 1 check --base main
+  expect 'codes == [("anchor-changed", "refund"), ("sibling-review", "settlement"), ("sibling-review", "web-display")]'
+  dt 0 confirm "$CID" refund
+  dt 1 check
+  expect 'codes == [("sibling-review", "settlement"), ("sibling-review", "web-display")]'
+
+  say "polyglot: updating Go too and confirming all unblocks"
+  sub svc/pricing/discount.go "math.Round(amount*c.Rate*100)" "math.Floor(amount*c.Rate*100)"
+  dt 1 check
+  expect '("anchor-changed", "settlement") in codes'
+  dt 0 confirm "$CID" --note "Go and Java round down; display still rounds to whole yuan"
+  dt 0 check --base main
+  expect 'j["ok"] and j["findings"] == []'
+  commit "round down everywhere"
+
+  say "polyglot: TypeScript rename is followed by sync; Go comment-only edit is silent"
+  sub web/src/priceLabel.ts "formatDiscount(" "renderDiscount("
+  dt 1 check
+  expect 'codes == [("anchor-moved", "web-display")]'
+  dt 0 sync
+  expect '[c["new_ref"] for c in j["changes"]] == ["web/src/priceLabel.ts#PriceLabel.renderDiscount"]'
+  sub svc/pricing/discount.go "// MemberDiscount is" "// MemberDiscount returns"
+  dt 0 check
+  expect 'j["ok"] and j["findings"] == []'
+  dt 0 index --full --verify
+  expect 'j["consistent"]'
+else
+  say "polyglot scenario skipped (pip install -e '.[all]' to enable)"
+  [ -z "${DITING_E2E_REQUIRE_POLYGLOT:-}" ] || fail "tree-sitter grammars are required (DITING_E2E_REQUIRE_POLYGLOT set)"
+fi
+
 printf '\nE2E PASS: %d steps\n' "$STEP"
