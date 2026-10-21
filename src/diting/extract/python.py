@@ -39,8 +39,14 @@ def _strip_docstring(node: ast.AST) -> ast.AST:
 
 
 def _normalize(node: ast.AST, *, anonymize: bool) -> str:
-    """Dump an AST without positions/docstrings; optionally erase identifiers."""
+    """Dump an AST without positions/docstrings; optionally erase identifiers.
+
+    The symbol's own name is always erased: it is already captured by the ref, so a pure
+    rename keeps the fingerprint and is handled like a move.
+    """
     node = copy.deepcopy(node)
+    if hasattr(node, "name"):
+        node.name = "_"
     for n in ast.walk(node):
         _strip_docstring(n)
         if anonymize:

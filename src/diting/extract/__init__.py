@@ -12,10 +12,10 @@ class Symbol:
     """An anchorable code unit (module, class, function, method).
 
     - ``qualname`` is the stable symbol path inside the file, e.g. ``DiscountCalc.apply``.
-    - ``fingerprint`` hashes the normalized AST *including* identifiers: unchanged when code
-      only moves or is reformatted.
-    - ``shape`` hashes the normalized AST *without* identifiers: unchanged when code is
-      only renamed. Together they drive the re-anchoring decision tree.
+    - ``fingerprint`` hashes the normalized AST *including* identifiers (except the symbol's
+      own name): unchanged when code only moves, is reformatted or the symbol is renamed.
+    - ``shape`` hashes the normalized AST *without* identifiers: unchanged when only names
+      inside the body change. Together they drive the re-anchoring decision tree.
     """
 
     path: str

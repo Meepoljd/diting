@@ -4,24 +4,27 @@ occurrences:
   anchors:
   - path: svc/pricing/discount.py
     symbol: DiscountCalc.apply
-    fingerprint: 55f35259c6351965
+    fingerprint: d0fe6c78e2153a5b
     shape: 57f13287c42c9aae
     state: verified
     confirmed_version: 1
+    basis: ef0a6c3e039d4e88
 - id: refund
   anchors:
   - path: svc/refund/refund.py
     symbol: refund_member_discount
-    fingerprint: 4a6c2d5af0329b7b
+    fingerprint: 31734acb487bde83
     shape: 5de5901a4ec7cec5
     state: verified
     confirmed_version: 1
+    basis: ef0a6c3e039d4e88
 - id: web-display
   variant: 展示时取整到元
   anchors:
   - path: web/price_label.py
     symbol: PriceLabel.format_discount
-    fingerprint: 0aee8f83fff5bdd4
+    fingerprint: 594e195fe0d55e95
     shape: a99e68d3d0630be3
     state: verified
     confirmed_version: 1
+    basis: ef0a6c3e039d4e88
