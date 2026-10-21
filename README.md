@@ -135,18 +135,40 @@ diting index [--full] [--verify]   # 增量索引；--verify 校验"增量 == �
 | `vocab` | warning | 概念使用了词表外的术语 |
 | `no-occurrence` | warning | active 概念没有任何出现点 |
 
+## Agent 集成与 CI（PR-4）
+
+```bash
+diting skill                                  # 生成 .diting/SKILL.md：教 Agent "改前 query → 改全部出现点 → impact → sync → confirm → check"
+diting skill --stdout > .claude/skills/diting/SKILL.md   # 或直接放进 Agent 的 skill 目录 / 在 AGENTS.md 中引用
+diting ci-template -o .github/workflows/diting.yml       # 生成 PR 门禁工作流（--pip 可指定安装来源）
+```
+
+- `skill` 与 `ci-template -o` 都是幂等的：内容相同为 `unchanged`；本地改过的文件不会被覆盖，除非显式 `--force`。
+- 生成的工作流在 PR 上运行 `diting check --base origin/<base_ref>`（`fetch-depth: 0` 以便计算 merge-base），在 main 上运行 `diting check`；阻断级发现 → exit 1 → PR 变红。模板快照见 [docs/diting-check.yml](docs/diting-check.yml)。
+
+### 回归手段
+
+本仓库自身的 CI（`.github/workflows/ci.yml`）在 Python 3.10–3.13 矩阵上依次执行：
+
+1. `pytest -q`：单元/集成测试；
+2. `bash scripts/e2e.sh`：端到端回归——在 `examples/shop` 的临时 git 副本上用**真实 CLI** 走完整工作流，并逐步断言退出码与 JSON 字段：建索引 → query 命中三处 → 只改退款的 PR 被 `impact`/`check --base` 拦下 → 只确认退款仍拦 → 同步修改并确认后放行 → 跨文件移动/重命名由 `sync` 自动跟随 → 纯注释改动不报 → 删除出现点 `anchor-lost` → `concept bump` 令全部过期 → info 级只告警 / gate off 抑制 → 增量索引 == 全量重建、损坏缓存可被发现 → `ci-template` 产物是合法工作流；
+3. `diting ci-template | diff - docs/diting-check.yml`：模板快照一致性（dogfood）。
+
+本地复现：`DITING="python -m diting" PYTHONPATH=src bash scripts/e2e.sh`（已安装时直接 `bash scripts/e2e.sh`）。
+
 ## 路线图
 
 - [x] **PR-1** 骨架：schema、`init / scan / vocab / concept / anchor / lint / status`、Python 提取器
 - [x] **PR-2** `query`（一句话 → 出现点，走同义词/上位词）与 `impact --diff`（改动 → 受影响概念）
 - [x] **PR-3** `sync`（自动重锚定）与 `check`（CI 门禁：漏改、过期、按等级分级），增量 = 全量一致性校验
-- [ ] **PR-4** `skill`（生成 Agent 使用的 SKILL.md）、GitHub Action 模板、端到端 demo
+- [x] **PR-4** `skill`（生成 Agent 使用的 SKILL.md）、GitHub Action 模板、端到端 demo
 - [ ] 之后：tree-sitter 多语言提取、性质测试生成、锚点变异测试、基于 git 历史的效果评测集
 
 ## 开发
 
 ```bash
 python -m pytest -q
+DITING="python -m diting" PYTHONPATH=src bash scripts/e2e.sh   # 端到端回归
 ```
 
 ## License

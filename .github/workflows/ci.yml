@@ -17,3 +17,7 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: pytest -q
       - run: diting --help
+      - name: e2e regression (real CLI, full agent workflow)
+        run: bash scripts/e2e.sh
+      - name: dogfood - generated CI template matches docs/diting-check.yml
+        run: diting ci-template | diff - docs/diting-check.yml

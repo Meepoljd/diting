@@ -1,6 +1,6 @@
 """diting command line.
 
-Commands: init, scan, index, vocab, concept, anchor, lint, status, query, impact, sync, confirm, check.
+Commands: init, scan, index, vocab, concept, anchor, lint, status, query, impact, sync, confirm, check, skill, ci-template.
 Every command accepts ``--json`` for compact, agent-readable output.
 """
 
@@ -23,6 +23,7 @@ from .query import query
 from .model import Anchor, Concept, Occurrence, SchemaError, Term
 from .store import DITING_DIR, NotInitialized, Repo
 from .sync import SyncError, confirm, family_hash, rebase_after_add, sync
+from .templates import DEFAULT_PIP_SPEC, SKILL_MD, ci_workflow
 
 
 class CliError(Exception):
@@ -456,6 +457,47 @@ def cmd_check(args: argparse.Namespace) -> int:
     return 0 if payload["ok"] else 1
 
 
+def _write_generated(path: Path, content: str, force: bool) -> str:
+    """Write a generated file; refuse to clobber a hand-edited copy unless ``force``."""
+    if path.exists():
+        old = path.read_text(encoding="utf-8")
+        if old == content:
+            return "unchanged"
+        if not force:
+            raise CliError(f"{path} exists and differs; pass --force to overwrite")
+        status = "updated"
+    else:
+        status = "created"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return status
+
+
+def cmd_skill(args: argparse.Namespace) -> int:
+    """Write the agent guide (SKILL.md) that teaches query -> edit all sites -> impact -> sync -> confirm -> check."""
+    if args.stdout:
+        sys.stdout.write(SKILL_MD)
+        return 0
+    path = Path(args.output) if args.output else _repo(args).dir / "SKILL.md"
+    status = _write_generated(path, SKILL_MD, args.force)
+    _emit(args, {"ok": True, "file": str(path), "status": status},
+          lambda p: f"{p['status']} {p['file']}\n  point your agent at it (e.g. copy to .claude/skills/diting/SKILL.md "
+                    f"or reference it from AGENTS.md)")
+    return 0
+
+
+def cmd_ci_template(args: argparse.Namespace) -> int:
+    """Emit a GitHub Actions workflow running `diting check --base origin/<base>` on pull requests."""
+    content = ci_workflow(args.pip)
+    if not args.output:
+        sys.stdout.write(content)
+        return 0
+    path = Path(args.output)
+    status = _write_generated(path, content, args.force)
+    _emit(args, {"ok": True, "file": str(path), "status": status}, lambda p: f"{p['status']} {p['file']}")
+    return 0
+
+
 # ------------------------------------------------------------------ parser
 
 
@@ -569,6 +611,18 @@ def build_parser() -> argparse.ArgumentParser:
     src.add_argument("--staged", action="store_true", help="also analyse staged changes")
     s.add_argument("--no-verify-index", action="store_true", help="skip the L0 incremental==full check")
     s.set_defaults(func=cmd_check)
+
+    s = sub.add_parser("skill", parents=[common], help="write .diting/SKILL.md, the guide for coding agents")
+    s.add_argument("-o", "--output", help="write here instead of .diting/SKILL.md")
+    s.add_argument("--stdout", action="store_true", help="print instead of writing")
+    s.add_argument("--force", action="store_true", help="overwrite a modified copy")
+    s.set_defaults(func=cmd_skill)
+
+    s = sub.add_parser("ci-template", parents=[common], help="print a GitHub Actions workflow running `diting check`")
+    s.add_argument("-o", "--output", help="write to this path, e.g. .github/workflows/diting.yml")
+    s.add_argument("--pip", default=DEFAULT_PIP_SPEC, help="pip requirement used to install diting in CI")
+    s.add_argument("--force", action="store_true", help="overwrite a modified copy")
+    s.set_defaults(func=cmd_ci_template)
     return p
 
 
