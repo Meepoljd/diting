@@ -105,3 +105,56 @@ def test_concept_bad_vocab_warns_and_duplicate_blocked(capsys, shop):
 def test_not_initialized_error(capsys, tmp_path):
     code, out = run(capsys, tmp_path, "status")
     assert code == 2 and "diting init" in out["error"]
+
+
+# ------------------------------------------------------------------ multi-language
+
+
+def _have(*mods: str) -> bool:
+    import importlib.util
+
+    return all(importlib.util.find_spec(m) is not None for m in ("tree_sitter", *mods))
+
+
+def test_init_autodetects_languages(tmp_path, capsys):
+    import pytest
+
+    if not _have("tree_sitter_go"):
+        pytest.skip("go grammar not installed")
+    from tests.conftest import write
+
+    write(tmp_path / "a.py", "def f():\n    return 1\n")
+    write(tmp_path / "svc/calc.go", "package svc\n\nfunc Apply(x int) int { return x * 2 }\n")
+    write(tmp_path / "node_modules/x/y.go", "package y\n")  # skipped
+    code, out = run(capsys, tmp_path, "init")
+    assert code == 0
+    assert out["languages"] == ["python", "go"] and out["detected"] == {"python": 1, "go": 1}
+    import yaml
+
+    cfg = yaml.safe_load((tmp_path / ".diting/config.yaml").read_text())
+    assert cfg["languages"] == ["python", "go"] and cfg["include"] == ["**/*.py", "**/*.go"]
+    code, out = run(capsys, tmp_path, "scan")
+    assert {s["ref"] for s in out["symbols"]} == {"a.py#f", "svc/calc.go#Apply"}
+
+
+def test_init_explicit_languages_and_anchor_occurrence_id(tmp_path, capsys):
+    import pytest
+
+    if not _have("tree_sitter_typescript"):
+        pytest.skip("typescript grammar not installed")
+    from tests.conftest import write
+
+    write(tmp_path / "web/label.ts", "export class Label {\n  format(x: number) { return x }\n}\n")
+    write(tmp_path / "x.py", "def f():\n    pass\n")
+    code, out = run(capsys, tmp_path, "init", "--languages", "typescript")
+    assert out["languages"] == ["typescript"] and out["symbols"] == 2
+    run(capsys, tmp_path, "concept", "add", "a.b", "rule")
+    code, out = run(capsys, tmp_path, "anchor", "add", "a.b", "web/label.ts#Label.format")
+    assert code == 0
+    edge = (tmp_path / ".diting/edges/a.b.yaml").read_text()
+    assert "id: web.label:Label.format" in edge
+
+
+def test_init_unknown_language_is_usage_error(tmp_path, capsys):
+    code, out = run(capsys, tmp_path, "init", "--languages", "cobol")
+    assert code == 2 and not out["ok"] and "unsupported language: cobol" in out["error"]

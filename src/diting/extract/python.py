@@ -1,7 +1,7 @@
 """Python extractor built on the stdlib ``ast`` module (no native deps).
 
-tree-sitter based extractors for other languages can implement the same ``Extractor``
-protocol later; the index layer is language agnostic.
+Other languages are handled by :mod:`diting.extract.treesitter`; both implement the same
+``Extractor`` protocol and the index layer is language agnostic.
 """
 
 from __future__ import annotations

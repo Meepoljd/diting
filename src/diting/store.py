@@ -13,13 +13,13 @@ from typing import Iterator
 
 import yaml
 
-from .extract import Symbol, get_extractors
+from .extract import Symbol, get_extractors, language_suffixes
 from .model import Concept, EdgeFile, SchemaError, Vocabulary
 
 DITING_DIR = ".diting"
 CACHE_DIR = ".cache"
 SCHEMA_VERSION = 1
-CACHE_VERSION = 3  # bump when Symbol / extractor output changes
+CACHE_VERSION = 4  # bump when Symbol / extractor output changes
 
 DEFAULT_CONFIG: dict = {
     "version": SCHEMA_VERSION,
@@ -34,12 +34,47 @@ DEFAULT_CONFIG: dict = {
         "**/__pycache__/**",
         "build/**",
         "dist/**",
+        "target/**",
+        "**/vendor/**",
     ],
     # gate policy per concept level: block | warn | off
     "gate": {"critical": "block", "normal": "block", "info": "warn"},
 }
 
 _ALWAYS_SKIP_DIRS = {".git", ".diting", "node_modules", "__pycache__", ".venv", "venv", ".tox", ".mypy_cache"}
+
+
+def include_patterns(languages: list[str]) -> list[str]:
+    """``include`` globs covering every suffix of the given languages (order kept, no dups)."""
+    sfx = language_suffixes()
+    out: list[str] = []
+    for lang in languages:
+        for s in sfx.get(lang, ()):
+            pat = f"**/*{s}"
+            if pat not in out:
+                out.append(pat)
+    return out
+
+
+def detect_languages(root: Path) -> dict[str, int]:
+    """Count source files per supported language (``.h`` is ambiguous and not counted)."""
+    owners: dict[str, list[str]] = {}
+    for lang, sfxs in language_suffixes().items():
+        for s in sfxs:
+            owners.setdefault(s, []).append(lang)
+    exclude = DEFAULT_CONFIG["exclude"]
+    counts: dict[str, int] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in _ALWAYS_SKIP_DIRS)
+        for fn in filenames:
+            langs = owners.get(Path(fn).suffix, [])
+            if len(langs) != 1:
+                continue
+            rel = (Path(dirpath) / fn).relative_to(root).as_posix()
+            if not _match(rel, exclude):
+                counts[langs[0]] = counts.get(langs[0], 0) + 1
+    order = list(language_suffixes())
+    return dict(sorted(counts.items(), key=lambda kv: order.index(kv[0])))
 
 
 class NotInitialized(RuntimeError):
@@ -90,8 +125,11 @@ class Repo:
     def initialized(self) -> bool:
         return (self.dir / "config.yaml").is_file()
 
-    def init_layout(self) -> list[str]:
-        """Create the directory layout; never overwrite existing human-authored files."""
+    def init_layout(self, languages: list[str] | None = None) -> list[str]:
+        """Create the directory layout; never overwrite existing human-authored files.
+
+        ``languages`` (first init only) sets ``languages`` and a matching ``include``.
+        """
         created: list[str] = []
         for sub in ("concepts", "edges", "changesets"):
             d = self.dir / sub
@@ -99,8 +137,12 @@ class Repo:
                 d.mkdir(parents=True)
                 (d / ".gitkeep").touch()
                 created.append(f"{DITING_DIR}/{sub}/")
+        config = dict(DEFAULT_CONFIG)
+        if languages:
+            config["languages"] = list(languages)
+            config["include"] = include_patterns(list(languages))
         files = {
-            "config.yaml": DEFAULT_CONFIG,
+            "config.yaml": config,
             "vocab.yaml": Vocabulary().to_dict(),
         }
         for name, data in files.items():

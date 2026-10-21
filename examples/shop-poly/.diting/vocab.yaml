@@ -1,0 +1,15 @@
+contexts:
+- 交易
+entities:
+- name: 会员
+  synonyms:
+  - member
+  - VIP
+- name: 折扣
+  synonyms:
+  - discount
+predicates:
+- name: 享受
+  synonyms:
+  - apply
+  class: compute

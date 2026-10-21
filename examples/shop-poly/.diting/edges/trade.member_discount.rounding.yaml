@@ -1,0 +1,33 @@
+concept: trade.member_discount.rounding
+occurrences:
+- id: settlement
+  anchors:
+  - path: svc/pricing/discount.go
+    symbol: Calc.MemberDiscount
+    fingerprint: f409ff06f0f9d9d7
+    shape: c4ba74ae9f89a1d8
+    state: verified
+    confirmed_version: 1
+    basis: c3651fb902b0c17d
+    note: 三处一致；展示处取整到元
+- id: refund
+  anchors:
+  - path: svc/refund/src/main/java/shop/refund/RefundService.java
+    symbol: RefundService.memberDiscount
+    fingerprint: 403507ec1944bc92
+    shape: 5a4d71069a96f0b4
+    state: verified
+    confirmed_version: 1
+    basis: c3651fb902b0c17d
+    note: 三处一致；展示处取整到元
+- id: web-display
+  variant: 展示时取整到元
+  anchors:
+  - path: web/src/priceLabel.ts
+    symbol: PriceLabel.formatDiscount
+    fingerprint: c354d013aa7537bc
+    shape: b8fb4eb2b65c6a26
+    state: verified
+    confirmed_version: 1
+    basis: c3651fb902b0c17d
+    note: 三处一致；展示处取整到元
