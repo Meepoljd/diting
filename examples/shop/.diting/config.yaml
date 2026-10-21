@@ -1,0 +1,18 @@
+version: 1
+languages:
+- python
+include:
+- '**/*.py'
+exclude:
+- .git/**
+- .diting/**
+- .venv/**
+- venv/**
+- '**/node_modules/**'
+- '**/__pycache__/**'
+- build/**
+- dist/**
+gate:
+  critical: block
+  normal: block
+  info: warn

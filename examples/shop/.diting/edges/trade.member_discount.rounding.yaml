@@ -1,0 +1,27 @@
+concept: trade.member_discount.rounding
+occurrences:
+- id: settlement
+  anchors:
+  - path: svc/pricing/discount.py
+    symbol: DiscountCalc.apply
+    fingerprint: 55f35259c6351965
+    shape: 57f13287c42c9aae
+    state: verified
+    confirmed_version: 1
+- id: refund
+  anchors:
+  - path: svc/refund/refund.py
+    symbol: refund_member_discount
+    fingerprint: 4a6c2d5af0329b7b
+    shape: 5de5901a4ec7cec5
+    state: verified
+    confirmed_version: 1
+- id: web-display
+  variant: 展示时取整到元
+  anchors:
+  - path: web/price_label.py
+    symbol: PriceLabel.format_discount
+    fingerprint: 0aee8f83fff5bdd4
+    shape: a99e68d3d0630be3
+    state: verified
+    confirmed_version: 1
